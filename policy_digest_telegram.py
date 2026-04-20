@@ -339,24 +339,29 @@ def telegram_api(token: str, method: str, payload: dict[str, str]) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def send_telegram(token: str, chat_id: str, text: str) -> None:
+def parse_chat_ids(value: str) -> list[str]:
+    return [chat_id.strip() for chat_id in value.split(",") if chat_id.strip()]
+
+
+def send_telegram(token: str, chat_ids: list[str], text: str) -> None:
     max_len = 3900
     parts = [text[i : i + max_len] for i in range(0, len(text), max_len)]
-    for idx, part in enumerate(parts, start=1):
-        prefix = f"({idx}/{len(parts)})\n" if len(parts) > 1 else ""
-        result = telegram_api(
-            token,
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": prefix + part,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": "true",
-            },
-        )
-        if not result.get("ok"):
-            raise RuntimeError(f"Telegram API error: {result}")
-        time.sleep(0.5)
+    for chat_id in chat_ids:
+        for idx, part in enumerate(parts, start=1):
+            prefix = f"({idx}/{len(parts)})\n" if len(parts) > 1 else ""
+            result = telegram_api(
+                token,
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": prefix + part,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": "true",
+                },
+            )
+            if not result.get("ok"):
+                raise RuntimeError(f"Telegram API error chat_id={chat_id}: {result}")
+            time.sleep(0.5)
 
 
 def env_int(name: str, default: int) -> int:
@@ -374,7 +379,7 @@ def main() -> int:
 
     load_env(ENV_PATH)
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    chat_ids = parse_chat_ids(os.getenv("TELEGRAM_CHAT_ID", ""))
     max_items_per_query = env_int("MAX_ITEMS_PER_QUERY", 5)
     max_digest_items = env_int("MAX_DIGEST_ITEMS", 20)
     lookback_days = env_int("NEWS_LOOKBACK_DAYS", 7)
@@ -382,7 +387,7 @@ def main() -> int:
     dry_run = os.getenv("DRY_RUN", "0").strip() == "1"
     ignore_sent = os.getenv("IGNORE_SENT", "0").strip() == "1"
 
-    if not token or not chat_id:
+    if not token or not chat_ids:
         print("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required.", file=sys.stderr)
         return 2
 
@@ -406,7 +411,7 @@ def main() -> int:
     if dry_run:
         print(build_digest(items, lookback_days=digest_lookback_days, html_output=False))
     else:
-        send_telegram(token, chat_id, build_digest(items, lookback_days=digest_lookback_days, html_output=True))
+        send_telegram(token, chat_ids, build_digest(items, lookback_days=digest_lookback_days, html_output=True))
         if items:
             original_seen_links = load_seen_links(STATE_PATH)
             save_seen_links(STATE_PATH, original_seen_links | {item.link for item in items})

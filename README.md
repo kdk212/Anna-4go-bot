@@ -34,7 +34,7 @@ PC가 꺼져 있어도 보내려면 GitHub Actions를 사용합니다.
 등록해야 하는 repository secrets:
 
 - `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
+- `TELEGRAM_CHAT_ID` 개인방과 그룹방에 함께 보내려면 쉼표로 구분합니다. 예: `694726450,-5135282922`
 
 워크플로 파일은 `.github/workflows/policy-digest.yml`입니다.
 실행 시간은 매일 `00:00 UTC`, 한국시간 오전 9시입니다.
