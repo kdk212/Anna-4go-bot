@@ -378,6 +378,7 @@ def main() -> int:
     max_items_per_query = env_int("MAX_ITEMS_PER_QUERY", 5)
     max_digest_items = env_int("MAX_DIGEST_ITEMS", 20)
     lookback_days = env_int("NEWS_LOOKBACK_DAYS", 7)
+    fallback_lookback_days = env_int("FALLBACK_NEWS_LOOKBACK_DAYS", 7)
     dry_run = os.getenv("DRY_RUN", "0").strip() == "1"
     ignore_sent = os.getenv("IGNORE_SENT", "0").strip() == "1"
 
@@ -392,11 +393,20 @@ def main() -> int:
         max_digest_items=max_digest_items,
         seen_links=seen_links,
     )
+    digest_lookback_days = lookback_days
+    if not items and fallback_lookback_days > lookback_days:
+        items = collect_news(
+            max_items_per_query=max_items_per_query,
+            lookback_days=fallback_lookback_days,
+            max_digest_items=max_digest_items,
+            seen_links=seen_links,
+        )
+        digest_lookback_days = fallback_lookback_days
 
     if dry_run:
-        print(build_digest(items, lookback_days=lookback_days, html_output=False))
+        print(build_digest(items, lookback_days=digest_lookback_days, html_output=False))
     else:
-        send_telegram(token, chat_id, build_digest(items, lookback_days=lookback_days, html_output=True))
+        send_telegram(token, chat_id, build_digest(items, lookback_days=digest_lookback_days, html_output=True))
         if items:
             original_seen_links = load_seen_links(STATE_PATH)
             save_seen_links(STATE_PATH, original_seen_links | {item.link for item in items})
