@@ -307,15 +307,27 @@ def html_link(url: str, label: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>'
 
 
-def build_digest(items: list[NewsItem], lookback_days: int, html_output: bool = False) -> str:
+def build_digest(
+    items: list[NewsItem],
+    lookback_days: int,
+    html_output: bool = False,
+    repeated_items: bool = False,
+) -> str:
     today = datetime.now(KST).strftime("%Y-%m-%d")
+    description = (
+        f"주요 언론사의 사설, 칼럼, 논평, 비평 중심으로 최근 {lookback_days}일 글을 모았습니다."
+        if repeated_items
+        else f"주요 언론사의 사설, 칼럼, 논평, 비평 중심으로 최근 {lookback_days}일 새 글을 모았습니다."
+    )
     lines = [
         f"중앙정부 정책 주요 논설 ({today})",
         "",
-        f"주요 언론사의 사설, 칼럼, 논평, 비평 중심으로 최근 {lookback_days}일 새 글을 모았습니다.",
+        description,
     ]
+    if repeated_items:
+        lines.append("새 항목이 없어 최근 주요 글을 중복 포함해 표시합니다.")
     if not items:
-        lines.extend(["", "오늘 수집된 새 항목이 없습니다."])
+        lines.extend(["", "오늘 수집된 항목이 없습니다."])
         return "\n".join(lines)
 
     for index, item in enumerate(items, start=1):
@@ -384,6 +396,7 @@ def main() -> int:
     max_digest_items = env_int("MAX_DIGEST_ITEMS", 20)
     lookback_days = env_int("NEWS_LOOKBACK_DAYS", 7)
     fallback_lookback_days = env_int("FALLBACK_NEWS_LOOKBACK_DAYS", 7)
+    repeat_when_no_new = os.getenv("REPEAT_WHEN_NO_NEW", "1").strip() == "1"
     dry_run = os.getenv("DRY_RUN", "0").strip() == "1"
     ignore_sent = os.getenv("IGNORE_SENT", "0").strip() == "1"
 
@@ -399,6 +412,7 @@ def main() -> int:
         seen_links=seen_links,
     )
     digest_lookback_days = lookback_days
+    repeated_items = False
     if not items and fallback_lookback_days > lookback_days:
         items = collect_news(
             max_items_per_query=max_items_per_query,
@@ -407,11 +421,36 @@ def main() -> int:
             seen_links=seen_links,
         )
         digest_lookback_days = fallback_lookback_days
+    if not items and repeat_when_no_new:
+        digest_lookback_days = max(lookback_days, fallback_lookback_days)
+        items = collect_news(
+            max_items_per_query=max_items_per_query,
+            lookback_days=digest_lookback_days,
+            max_digest_items=max_digest_items,
+            seen_links=set(),
+        )
+        repeated_items = bool(items)
 
     if dry_run:
-        print(build_digest(items, lookback_days=digest_lookback_days, html_output=False))
+        print(
+            build_digest(
+                items,
+                lookback_days=digest_lookback_days,
+                html_output=False,
+                repeated_items=repeated_items,
+            )
+        )
     else:
-        send_telegram(token, chat_ids, build_digest(items, lookback_days=digest_lookback_days, html_output=True))
+        send_telegram(
+            token,
+            chat_ids,
+            build_digest(
+                items,
+                lookback_days=digest_lookback_days,
+                html_output=True,
+                repeated_items=repeated_items,
+            ),
+        )
         if items:
             original_seen_links = load_seen_links(STATE_PATH)
             save_seen_links(STATE_PATH, original_seen_links | {item.link for item in items})

@@ -29,6 +29,7 @@ jobs:
           MAX_DIGEST_ITEMS: "20"
           NEWS_LOOKBACK_DAYS: "1"
           FALLBACK_NEWS_LOOKBACK_DAYS: "7"
+          REPEAT_WHEN_NO_NEW: "1"
         run: python policy_digest_telegram.py
 
       - name: Save sent-link state
