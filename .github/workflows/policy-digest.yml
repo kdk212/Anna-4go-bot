@@ -29,4 +29,12 @@ jobs:
           MAX_DIGEST_ITEMS: "20"
           NEWS_LOOKBACK_HOURS: "24"
           FALLBACK_NEWS_LOOKBACK_HOURS: "48"
-        run: python policy_digest_telegram.py
+        run: |
+          python policy_digest_telegram.py 2>&1 | tee send.log
+
+      - name: Upload send log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: send-log
+          path: send.log
