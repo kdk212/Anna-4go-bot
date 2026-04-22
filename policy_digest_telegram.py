@@ -270,28 +270,44 @@ def html_link(url: str, label: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>'
 
 
-def build_digest(items: list[NewsItem], lookback_hours: int, html_output: bool = False) -> str:
+def build_digest_parts(items: list[NewsItem], lookback_hours: int, html_output: bool = False) -> list[str]:
     today = datetime.now(KST).strftime("%Y-%m-%d")
-    lines = [
+    header_lines = [
         f"주요 언론사 논설 모음 ({today})",
         "",
         f"주요 언론사의 사설, 칼럼, 논평, 비평을 최근 {lookback_hours}시간 기준으로 모았습니다.",
     ]
     if not items:
-        lines.extend(["", "최근 기준에 맞는 항목이 없습니다."])
-        return "\n".join(lines)
+        header_lines.extend(["", "최근 기준에 맞는 항목이 없습니다."])
+        return ["\n".join(header_lines)]
 
+    item_blocks: list[str] = []
     for index, item in enumerate(items, start=1):
         title = html_link(item.link, item.title) if html_output else item.title
-        lines.extend(
-            [
-                "",
-                f"{index}. {title}",
-                f"   {item.source} | {item_time(item)}",
-            ]
+        item_blocks.append(
+            "\n".join(
+                [
+                    f"{index}. {title}",
+                    f"   {item.source} | {item_time(item)}",
+                ]
+            )
         )
 
-    return "\n".join(lines)
+    parts: list[str] = []
+    current = "\n".join(header_lines)
+    max_len = 3900
+
+    for block in item_blocks:
+        candidate = current + "\n\n" + block
+        if len(candidate) <= max_len:
+            current = candidate
+            continue
+        parts.append(current)
+        current = "\n".join([header_lines[0], "", block])
+
+    if current:
+        parts.append(current)
+    return parts
 
 
 def telegram_api(token: str, method: str, payload: dict[str, str]) -> dict:
@@ -315,8 +331,7 @@ def parse_chat_ids(value: str) -> list[str]:
 
 
 def send_telegram(token: str, chat_ids: list[str], text: str) -> None:
-    max_len = 3900
-    parts = [text[i : i + max_len] for i in range(0, len(text), max_len)]
+    parts = [text]
     delivered_chats = 0
     failures: list[str] = []
     for chat_id in chat_ids:
@@ -386,13 +401,10 @@ def main() -> int:
         effective_lookback_hours = fallback_lookback_hours
 
     if dry_run:
-        print(build_digest(items, lookback_hours=effective_lookback_hours, html_output=False))
+        print("\n\n".join(build_digest_parts(items, lookback_hours=effective_lookback_hours, html_output=False)))
     else:
-        send_telegram(
-            token,
-            chat_ids,
-            build_digest(items, lookback_hours=effective_lookback_hours, html_output=True),
-        )
+        for part in build_digest_parts(items, lookback_hours=effective_lookback_hours, html_output=True):
+            send_telegram(token, chat_ids, part)
     log(f"sent digest items={len(items)} dry_run={dry_run} lookback_hours={effective_lookback_hours}")
     return 0
 
