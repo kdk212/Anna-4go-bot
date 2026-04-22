@@ -22,6 +22,7 @@ jobs:
           python-version: "3.12"
 
       - name: Send Telegram digest
+        shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -30,6 +31,7 @@ jobs:
           NEWS_LOOKBACK_HOURS: "24"
           FALLBACK_NEWS_LOOKBACK_HOURS: "48"
         run: |
+          set -o pipefail
           python policy_digest_telegram.py 2>&1 | tee send.log
 
       - name: Upload send log
