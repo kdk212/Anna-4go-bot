@@ -19,24 +19,17 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 LOG_DIR = BASE_DIR / "logs"
-STATE_PATH = BASE_DIR / "policy_digest_state.json"
 KST = timezone(timedelta(hours=9), name="KST")
 
 
-POLICY_TERMS = [
-    "정부 정책",
-    "중앙정부 정책",
-    "기획재정부 정책",
-    "교육부 정책",
-    "보건복지부 정책",
-    "국토교통부 정책",
-    "산업통상자원부 정책",
-    "고용노동부 정책",
-    "공정거래위원회 정책",
-    "규제개혁",
+SEARCH_TERMS = [
+    "사설",
+    "칼럼",
+    "논평",
+    "비평",
+    "시론",
+    "오피니언",
 ]
-
-OPINION_TERMS = "사설 OR 칼럼 OR 논평 OR 비평 OR 시론 OR 기고 OR 오피니언 OR 분석"
 
 MAJOR_SOURCES = {
     "조선일보": 100,
@@ -65,45 +58,13 @@ OPINION_KEYWORDS = (
     "칼럼",
     "논평",
     "비평",
-    "기고",
     "시론",
+    "오피니언",
+    "기고",
     "취재수첩",
     "기자수첩",
     "데스크",
-    "오피니언",
-    "전문가",
     "분석",
-)
-
-POLICY_RELEVANCE_KEYWORDS = (
-    "정부",
-    "정책",
-    "중앙정부",
-    "부처",
-    "재경부",
-    "교육부",
-    "복지부",
-    "국토부",
-    "산업부",
-    "고용부",
-    "공정위",
-    "공정거래",
-    "규제",
-    "개혁",
-    "재정",
-    "세금",
-    "조세",
-    "예산",
-    "복지",
-    "교육",
-    "노동",
-    "부동산",
-    "주택",
-    "의료",
-    "물가",
-    "민생",
-    "산업",
-    "고용",
 )
 
 EXCLUDE_TITLE_KEYWORDS = (
@@ -117,10 +78,12 @@ EXCLUDE_TITLE_KEYWORDS = (
     "해명]",
     "[해명",
     "동정",
+    "WT논평",
 )
 
 EXCLUDE_SOURCES = (
     "대한민국 정책브리핑",
+    "연합뉴스TV",
     "네이트",
     "v.daum.net",
 )
@@ -159,7 +122,7 @@ def strip_tags(value: str) -> str:
 
 
 def build_queries() -> list[str]:
-    return [f'"{term}" ({OPINION_TERMS})' for term in POLICY_TERMS]
+    return [f'"{term}"' for term in SEARCH_TERMS]
 
 
 def google_news_rss_url(query: str, lookback_days: int) -> str:
@@ -176,7 +139,7 @@ def fetch_url(url: str, timeout: int = 20) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 policy-digest-bot/1.0",
+            "User-Agent": "Mozilla/5.0 opinion-digest-bot/1.0",
             "Accept": "application/rss+xml, application/xml, text/xml",
         },
     )
@@ -216,75 +179,6 @@ def parse_google_rss(xml_bytes: bytes, query: str, limit: int) -> list[NewsItem]
     return items
 
 
-def load_seen_links(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    links = data.get("sent_links", [])
-    return set(links if isinstance(links, list) else [])
-
-
-def save_seen_links(path: Path, links: set[str]) -> None:
-    data = {
-        "updated_at": datetime.now(KST).isoformat(),
-        "sent_links": sorted(links)[-1000:],
-    }
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def collect_news(
-    max_items_per_query: int,
-    lookback_days: int,
-    max_digest_items: int,
-    seen_links: set[str],
-) -> list[NewsItem]:
-    collected: list[NewsItem] = []
-    seen_titles: set[str] = set()
-    for query in build_queries():
-        try:
-            xml_bytes = fetch_url(google_news_rss_url(query, lookback_days))
-            raw_items = parse_google_rss(xml_bytes, query, max(max_items_per_query * 6, 30))
-            for item in raw_items:
-                if not is_relevant_opinion_item(item):
-                    continue
-                if item.link in seen_links:
-                    continue
-                key = normalize_title(item.title)
-                if key in seen_titles:
-                    continue
-                seen_titles.add(key)
-                collected.append(item)
-        except Exception as exc:
-            log(f"RSS fetch failed query={query!r}: {exc}")
-        time.sleep(0.4)
-
-    collected.sort(
-        key=lambda item: (
-            source_score(item.source),
-            item.published or datetime.min.replace(tzinfo=timezone.utc),
-        ),
-        reverse=True,
-    )
-    return collected[:max_digest_items]
-
-
-def is_relevant_opinion_item(item: NewsItem) -> bool:
-    title = item.title
-    source = item.source
-    if any(blocked in source for blocked in EXCLUDE_SOURCES):
-        return False
-    if source_score(source) <= 0:
-        return False
-    if any(blocked in title for blocked in EXCLUDE_TITLE_KEYWORDS):
-        return False
-    has_opinion_marker = any(keyword in title for keyword in OPINION_KEYWORDS)
-    has_policy_marker = any(keyword in title for keyword in POLICY_RELEVANCE_KEYWORDS)
-    return has_opinion_marker and has_policy_marker
-
-
 def source_score(source: str) -> int:
     for name, score in MAJOR_SOURCES.items():
         if name in source:
@@ -297,6 +191,67 @@ def normalize_title(title: str) -> str:
     return re.sub(r"\W+", "", title).lower()
 
 
+def is_recent(item: NewsItem, lookback_hours: int, now: datetime) -> bool:
+    if not item.published:
+        return False
+    published = item.published.astimezone(KST)
+    if published > now + timedelta(minutes=5):
+        return False
+    return published >= now - timedelta(hours=lookback_hours)
+
+
+def is_relevant_opinion_item(item: NewsItem, lookback_hours: int, now: datetime) -> bool:
+    title = item.title
+    source = item.source
+    if any(blocked in source for blocked in EXCLUDE_SOURCES):
+        return False
+    if source_score(source) <= 0:
+        return False
+    if any(blocked in title for blocked in EXCLUDE_TITLE_KEYWORDS):
+        return False
+    if title.strip() in {"오피니언", "사설", "칼럼", "논평", "비평"}:
+        return False
+    if not any(keyword in title for keyword in OPINION_KEYWORDS):
+        return False
+    return is_recent(item, lookback_hours, now)
+
+
+def collect_news(
+    max_items_per_query: int,
+    lookback_hours: int,
+    max_digest_items: int,
+) -> list[NewsItem]:
+    collected: list[NewsItem] = []
+    seen_titles: set[str] = set()
+    now = datetime.now(KST)
+    lookback_days = max(1, (lookback_hours + 23) // 24)
+
+    for query in build_queries():
+        try:
+            xml_bytes = fetch_url(google_news_rss_url(query, lookback_days))
+            raw_items = parse_google_rss(xml_bytes, query, max(max_items_per_query * 8, 40))
+            for item in raw_items:
+                if not is_relevant_opinion_item(item, lookback_hours=lookback_hours, now=now):
+                    continue
+                key = normalize_title(item.title)
+                if key in seen_titles:
+                    continue
+                seen_titles.add(key)
+                collected.append(item)
+        except Exception as exc:
+            log(f"RSS fetch failed query={query!r}: {exc}")
+        time.sleep(0.4)
+
+    collected.sort(
+        key=lambda item: (
+            item.published or datetime.min.replace(tzinfo=timezone.utc),
+            source_score(item.source),
+        ),
+        reverse=True,
+    )
+    return collected[:max_digest_items]
+
+
 def item_time(item: NewsItem) -> str:
     if not item.published:
         return "시간 미상"
@@ -307,27 +262,15 @@ def html_link(url: str, label: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>'
 
 
-def build_digest(
-    items: list[NewsItem],
-    lookback_days: int,
-    html_output: bool = False,
-    repeated_items: bool = False,
-) -> str:
+def build_digest(items: list[NewsItem], lookback_hours: int, html_output: bool = False) -> str:
     today = datetime.now(KST).strftime("%Y-%m-%d")
-    description = (
-        f"주요 언론사의 사설, 칼럼, 논평, 비평 중심으로 최근 {lookback_days}일 글을 모았습니다."
-        if repeated_items
-        else f"주요 언론사의 사설, 칼럼, 논평, 비평 중심으로 최근 {lookback_days}일 새 글을 모았습니다."
-    )
     lines = [
-        f"중앙정부 정책 주요 논설 ({today})",
+        f"주요 언론사 논설 모음 ({today})",
         "",
-        description,
+        f"주요 언론사의 사설, 칼럼, 논평, 비평을 최근 {lookback_hours}시간 기준으로 모았습니다.",
     ]
-    if repeated_items:
-        lines.append("새 항목이 없어 최근 주요 글을 중복 포함해 표시합니다.")
     if not items:
-        lines.extend(["", "오늘 수집된 항목이 없습니다."])
+        lines.extend(["", "최근 기준에 맞는 항목이 없습니다."])
         return "\n".join(lines)
 
     for index, item in enumerate(items, start=1):
@@ -392,69 +335,39 @@ def main() -> int:
     load_env(ENV_PATH)
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_ids = parse_chat_ids(os.getenv("TELEGRAM_CHAT_ID", ""))
-    max_items_per_query = env_int("MAX_ITEMS_PER_QUERY", 5)
+    max_items_per_query = env_int("MAX_ITEMS_PER_QUERY", 10)
     max_digest_items = env_int("MAX_DIGEST_ITEMS", 20)
-    lookback_days = env_int("NEWS_LOOKBACK_DAYS", 7)
-    fallback_lookback_days = env_int("FALLBACK_NEWS_LOOKBACK_DAYS", 7)
-    repeat_when_no_new = os.getenv("REPEAT_WHEN_NO_NEW", "1").strip() == "1"
+    lookback_hours = env_int("NEWS_LOOKBACK_HOURS", 24)
+    fallback_lookback_hours = env_int("FALLBACK_NEWS_LOOKBACK_HOURS", 48)
     dry_run = os.getenv("DRY_RUN", "0").strip() == "1"
-    ignore_sent = os.getenv("IGNORE_SENT", "0").strip() == "1"
 
     if not token or not chat_ids:
         print("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required.", file=sys.stderr)
         return 2
 
-    seen_links = set() if ignore_sent else load_seen_links(STATE_PATH)
     items = collect_news(
         max_items_per_query=max_items_per_query,
-        lookback_days=lookback_days,
+        lookback_hours=lookback_hours,
         max_digest_items=max_digest_items,
-        seen_links=seen_links,
     )
-    digest_lookback_days = lookback_days
-    repeated_items = False
-    if not items and fallback_lookback_days > lookback_days:
+    effective_lookback_hours = lookback_hours
+    if not items and fallback_lookback_hours > lookback_hours:
         items = collect_news(
             max_items_per_query=max_items_per_query,
-            lookback_days=fallback_lookback_days,
+            lookback_hours=fallback_lookback_hours,
             max_digest_items=max_digest_items,
-            seen_links=seen_links,
         )
-        digest_lookback_days = fallback_lookback_days
-    if not items and repeat_when_no_new:
-        digest_lookback_days = max(lookback_days, fallback_lookback_days)
-        items = collect_news(
-            max_items_per_query=max_items_per_query,
-            lookback_days=digest_lookback_days,
-            max_digest_items=max_digest_items,
-            seen_links=set(),
-        )
-        repeated_items = bool(items)
+        effective_lookback_hours = fallback_lookback_hours
 
     if dry_run:
-        print(
-            build_digest(
-                items,
-                lookback_days=digest_lookback_days,
-                html_output=False,
-                repeated_items=repeated_items,
-            )
-        )
+        print(build_digest(items, lookback_hours=effective_lookback_hours, html_output=False))
     else:
         send_telegram(
             token,
             chat_ids,
-            build_digest(
-                items,
-                lookback_days=digest_lookback_days,
-                html_output=True,
-                repeated_items=repeated_items,
-            ),
+            build_digest(items, lookback_hours=effective_lookback_hours, html_output=True),
         )
-        if items:
-            original_seen_links = load_seen_links(STATE_PATH)
-            save_seen_links(STATE_PATH, original_seen_links | {item.link for item in items})
-    log(f"sent digest items={len(items)} dry_run={dry_run}")
+    log(f"sent digest items={len(items)} dry_run={dry_run} lookback_hours={effective_lookback_hours}")
     return 0
 
 
