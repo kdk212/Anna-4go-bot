@@ -136,15 +136,23 @@ def google_news_rss_url(query: str, lookback_days: int) -> str:
 
 
 def fetch_url(url: str, timeout: int = 20) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 opinion-digest-bot/1.0",
-            "Accept": "application/rss+xml, application/xml, text/xml",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 opinion-digest-bot/1.0",
+                    "Accept": "application/rss+xml, application/xml, text/xml",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:
+            last_error = exc
+            time.sleep(1.5 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def parse_google_rss(xml_bytes: bytes, query: str, limit: int) -> list[NewsItem]:
@@ -288,10 +296,18 @@ def build_digest(items: list[NewsItem], lookback_hours: int, html_output: bool =
 
 def telegram_api(token: str, method: str, payload: dict[str, str]) -> dict:
     url = f"https://api.telegram.org/bot{token}/{method}"
-    data = urllib.parse.urlencode(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=data, method="POST")
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            data = urllib.parse.urlencode(payload).encode("utf-8")
+            request = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(request, timeout=45) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            last_error = exc
+            time.sleep(2 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def parse_chat_ids(value: str) -> list[str]:
@@ -301,22 +317,32 @@ def parse_chat_ids(value: str) -> list[str]:
 def send_telegram(token: str, chat_ids: list[str], text: str) -> None:
     max_len = 3900
     parts = [text[i : i + max_len] for i in range(0, len(text), max_len)]
+    delivered_chats = 0
+    failures: list[str] = []
     for chat_id in chat_ids:
-        for idx, part in enumerate(parts, start=1):
-            prefix = f"({idx}/{len(parts)})\n" if len(parts) > 1 else ""
-            result = telegram_api(
-                token,
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": prefix + part,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": "true",
-                },
-            )
-            if not result.get("ok"):
-                raise RuntimeError(f"Telegram API error chat_id={chat_id}: {result}")
-            time.sleep(0.5)
+        try:
+            for idx, part in enumerate(parts, start=1):
+                prefix = f"({idx}/{len(parts)})\n" if len(parts) > 1 else ""
+                result = telegram_api(
+                    token,
+                    "sendMessage",
+                    {
+                        "chat_id": chat_id,
+                        "text": prefix + part,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": "true",
+                    },
+                )
+                if not result.get("ok"):
+                    raise RuntimeError(f"Telegram API error chat_id={chat_id}: {result}")
+                time.sleep(0.5)
+            delivered_chats += 1
+        except Exception as exc:
+            failures.append(f"{chat_id}: {exc}")
+            log(f"telegram send failed chat_id={chat_id}: {exc}")
+
+    if delivered_chats == 0:
+        raise RuntimeError("All Telegram deliveries failed: " + "; ".join(failures))
 
 
 def env_int(name: str, default: int) -> int:
